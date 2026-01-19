@@ -83,39 +83,81 @@ async fn process_batch(client: &Client, args: &Args, paths: &[PathBuf]) -> Resul
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
 
+    let filenames_json = serde_json::to_string(&filenames).unwrap_or_else(|_| "[]".to_string());
+
     let prompt = format!(
-        "Analyze this list of filenames and suggest a concise, single-word directory name for each. 
-        Return ONLY a JSON object where keys are filenames and values are the suggested directory names.
-        Filenames: {:?}
-        Example output: {{ \"file1.jpg\": \"Photos\", \"script.py\": \"Coding\" }}",
-        filenames
+        "Analyze this list of filenames and assign a concise directory name for each.
+        Rules:
+        1. Group files primarily by file extension and type (e.g., all .mp3/.wav files should go to 'Music' or 'Audio', .jpg/.png to 'Images').
+        2. Do NOT translate Japanese or foreign filenames to English for the category name. Classify them by their file type (e.g. 'Music').
+        3. Use specific categories only if semantically distinct (e.g., 'Invoices' vs 'Documents').
+        Return ONLY a JSON object mapping filenames to directory names.
+        Filenames: {}
+        Example output: {{ \"song.mp3\": \"Music\", \"photo.jpg\": \"Images\", \"invoice.pdf\": \"Documents\" }}",
+        filenames_json
     );
 
     let request = OllamaRequest {
         model: args.model.clone(),
-        prompt,
+        prompt: prompt.clone(),
         stream: false,
         format: "json".to_string(), // Tell Ollama to enforce JSON output
     };
 
-    let res = client.post(&args.api_url)
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to contact Ollama API")?;
+    let max_retries = 3;
+    let mut mapping: Option<HashMap<String, String>> = None;
 
-    if !res.status().is_success() {
-        let status = res.status();
-        let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        eprintln!("API Error: {} - {}", status, error_text);
-        return Ok(());
+    for attempt in 1..=max_retries {
+        let res = client.post(&args.api_url)
+            .json(&request)
+            .send()
+            .await;
+
+        match res {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                    eprintln!("API Error (Attempt {}/{}): {} - {}", attempt, max_retries, status, error_text);
+                } else {
+                    match response.json::<OllamaResponse>().await {
+                        Ok(ollama_res) => {
+                            // Clean markdown if present
+                            let clean_json = ollama_res.response.trim();
+                            let clean_json = clean_json.strip_prefix("```json").unwrap_or(clean_json);
+                            let clean_json = clean_json.strip_prefix("```").unwrap_or(clean_json);
+                            let clean_json = clean_json.strip_suffix("```").unwrap_or(clean_json);
+                            
+                            match serde_json::from_str::<HashMap<String, String>>(clean_json) {
+                                Ok(map) => {
+                                    mapping = Some(map);
+                                    break;
+                                }
+                                Err(e) => {
+                                    eprintln!("JSON Parse Error (Attempt {}/{}): {}. Response was: {}", attempt, max_retries, e, ollama_res.response);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to parse response body (Attempt {}/{}): {}", attempt, max_retries, e),
+                    }
+                }
+            }
+            Err(e) => eprintln!("Network Error (Attempt {}/{}): {}", attempt, max_retries, e),
+        }
+
+        if attempt < max_retries {
+            eprintln!("Retrying in 2 seconds...");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
     }
 
-    let ollama_res: OllamaResponse = res.json().await.context("Failed to parse Ollama response")?;
-    
-    // Parse the JSON mapping from the LLM
-    let mapping: HashMap<String, String> = serde_json::from_str(&ollama_res.response)
-        .context("LLM returned invalid JSON mapping")?;
+    let mapping = match mapping {
+        Some(m) => m,
+        None => {
+            eprintln!("Failed to process batch after {} attempts. Skipping batch.", max_retries);
+            return Ok(());
+        }
+    };
 
     for path in paths {
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
