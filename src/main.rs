@@ -24,6 +24,10 @@ struct Args {
     /// Number of files to process in a single LLM batch
     #[arg(short, long, default_value = "15")]
     batch_size: usize,
+
+    /// Preview changes without moving files
+    #[arg(short, long)]
+    dry_run: bool,
 }
 
 #[derive(Serialize)]
@@ -47,6 +51,10 @@ async fn main() -> Result<()> {
 
     if !target_path.exists() || !target_path.is_dir() {
         anyhow::bail!("Target directory does not exist or is not a directory: {:?}", target_path);
+    }
+
+    if args.dry_run {
+        println!("*** DRY RUN: No files will be moved ***");
     }
 
     println!("Sorting files in {:?} using model '{}' (Batch size: {})...", target_path, args.model, args.batch_size);
@@ -166,13 +174,18 @@ async fn process_batch(client: &Client, args: &Args, paths: &[PathBuf]) -> Resul
             let sanitized_category = if sanitized_category.is_empty() { "Other".to_string() } else { sanitized_category };
 
             let target_dir = Path::new(&args.target_dir).join(&sanitized_category);
-            if !target_dir.exists() {
-                fs::create_dir_all(&target_dir).context("Failed to create category directory")?;
-            }
+            
+            if args.dry_run {
+                println!("[DRY RUN] Would move '{}' -> '{}'", filename, sanitized_category);
+            } else {
+                if !target_dir.exists() {
+                    fs::create_dir_all(&target_dir).context("Failed to create category directory")?;
+                }
 
-            let new_path = target_dir.join(path.file_name().unwrap());
-            println!("Moving '{}' -> '{}'", filename, sanitized_category);
-            fs::rename(path, new_path).ok(); // Use ok() to avoid stopping the whole batch on one failure
+                let new_path = target_dir.join(path.file_name().unwrap());
+                println!("Moving '{}' -> '{}'", filename, sanitized_category);
+                fs::rename(path, new_path).ok(); // Use ok() to avoid stopping the whole batch on one failure
+            }
         }
     }
 

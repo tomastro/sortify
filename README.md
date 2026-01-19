@@ -1,83 +1,94 @@
 # NeuroSort 🧠📂
 
-**NeuroSort** (internally `llm_sorter`) is an intelligent, privacy-first CLI tool written in Rust that brings order to your filesystem chaos. Instead of relying on brittle file extensions or complex regex rules, NeuroSort uses the power of Local Large Language Models (LLMs) via **Ollama** to semantically understand what a file is based on its name and categorize it accordingly.
+**NeuroSort** is a high-performance, intelligent CLI tool written in Rust that organizes your filesystem using Local Large Language Models (LLMs). By leveraging **Ollama**, NeuroSort semantically analyzes filenames to categorize them into logical folders—all while keeping your data 100% private and local.
 
-> "Stop organizing files yourself. Let the AI do it."
+---
 
-## 🚀 Features
+## ✨ Key Features
 
-*   **Semantic Classification:** Understands that `final_v2_real_draft.pdf` is a *Document* and `main.rs` is *Code*, without hardcoded lists.
-*   **Privacy First:** Runs 100% locally using Ollama. No data leaves your machine.
-*   **Blazingly Fast:** Built with Rust 🦀 and Tokio for asynchronous performance.
-*   **Model Agnostic:** Use any model available in your Ollama library (`llama3`, `mistral`, `gpt-oss`, etc.).
+- **Semantic Intelligence:** Goes beyond extensions. Understands context to group files naturally.
+- **Batch Processing:** Optimized for speed by processing multiple files in a single LLM request.
+- **Multi-Language Support:** Robust handling of Unicode filenames (Japanese, Chinese, Arabic, etc.) without losing semantic meaning.
+- **Dry Run Mode:** Preview your organizational changes safely before any files are moved.
+- **Resilient Logic:** Automatic retries and JSON cleaning to handle LLM non-determinism.
+- **Privacy First:** No cloud APIs. Your filenames never leave your machine.
+
+---
 
 ## 🛠️ Prerequisites
 
-1.  **Rust Toolchain:** [Install Rust](https://rustup.rs/)
-2.  **Ollama:** [Install Ollama](https://ollama.com/)
-3.  **An LLM Model:**
+1.  **Rust:** [Install via rustup.rs](https://rustup.rs/)
+2.  **Ollama:** [Install via ollama.com](https://ollama.com/)
+3.  **LLM Model:**
     ```bash
-    ollama pull gpt-oss:cloud-20b
+    ollama pull gpt-oss:20b-cloud  # Default model
     # OR
     ollama pull llama3
     ```
 
+---
+
 ## 📦 Installation
 
-Clone the repository and build:
-
 ```bash
-cd llm_sorter
+git clone https://github.com/tomastro/sortify.git
+cd sortify
 cargo build --release
 ```
+The binary will be available at `./target/release/llm_sorter`.
 
-The binary will be located at `./target/release/llm_sorter`.
+---
 
-## 💻 Usage
+## 🚀 Usage
 
-### Basic Sorting
-Sort files in the current directory using the default model (`gpt-oss:cloud-20b`):
-
+### 1. Basic Organizational Run
+Sort files in the current directory using the default model:
 ```bash
 cargo run
 ```
 
-### Specify a Directory
-Clean up a specific messy download folder:
-
+### 2. Preview Changes (Dry Run) 🛡️
+See what NeuroSort *would* do without actually moving any files:
 ```bash
-cargo run -- --target-dir ~/Downloads
+cargo run -- --dry-run
 ```
 
-### Use a Different Model
-If you prefer `llama3` or another model you have pulled:
-
+### 3. Target a Specific Directory
 ```bash
-cargo run -- --model llama3
+cargo run -- --target-dir "~/Downloads/MessyFolder"
 ```
 
-### Custom API URL
-If Ollama is running on a different port or machine:
-
+### 4. Advanced Configuration
+Tailor the sorting process with custom models and batch sizes:
 ```bash
-cargo run -- --api-url http://192.168.1.50:11434/api/generate
+cargo run -- \
+  --model llama3 \
+  --batch-size 20 \
+  --api-url http://localhost:11434/api/generate
 ```
 
-## 📂 Categories
+---
 
-The AI classifies files into these default buckets:
-*   **Documents** (PDFs, Word docs, Text files)
-*   **Images** (JPG, PNG, GIF, SVG)
-*   **Music** (MP3, WAV, FLAC)
-*   **Video** (MP4, MKV, AVI)
-*   **Code** (Source files, Scripts)
-*   **Archives** (Zips, Tars, Gzips)
-*   **Other** (Executables, Unknowns)
+## ⚙️ Options
 
-## 🤝 Contributing
+| Flag | Long Flag | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `-t` | `--target-dir` | Directory to organize | `.` |
+| `-m` | `--model` | Ollama model to use | `gpt-oss:20b-cloud` |
+| | `--api-url` | Ollama API endpoint | `localhost:11434` |
+| `-b` | `--batch-size`| Files per LLM request | `15` |
+| `-d` | `--dry-run` | Preview mode (no moves) | `false` |
 
-Feel free to open issues or PRs. If you want to add more complex logic (like looking at file headers/magic bytes), go ahead!
+---
+
+## 📂 How It Categorizes
+
+NeuroSort uses intelligent rules to ensure your folders stay clean:
+1.  **Type Grouping:** Automatically groups media (.mp3, .jpg) and docs (.pdf, .xlsx).
+2.  **No-Translation Policy:** Foreign filenames (Japanese/Chinese/etc.) are categorized by type, not by their English translation.
+3.  **Sanitized Naming:** Folder names are automatically sanitized for filesystem compatibility.
+
+---
 
 ## 📜 License
-
-MIT
+Distributed under the MIT License. See `LICENSE` for more information.
