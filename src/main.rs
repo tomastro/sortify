@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,12 +14,16 @@ struct Args {
     target_dir: String,
 
     /// The LLM model to use
-    #[arg(short, long, default_value = "gpt-oss:cloud-20b")]
+    #[arg(short, long, default_value = "gpt-oss:20b-cloud")]
     model: String,
 
     /// The Ollama API URL
     #[arg(long, default_value = "http://localhost:11434/api/generate")]
     api_url: String,
+
+    /// Number of files to process in a single LLM batch
+    #[arg(short, long, default_value = "15")]
+    batch_size: usize,
 }
 
 #[derive(Serialize)]
@@ -26,6 +31,7 @@ struct OllamaRequest {
     model: String,
     prompt: String,
     stream: bool,
+    format: String,
 }
 
 #[derive(Deserialize)]
@@ -43,47 +49,55 @@ async fn main() -> Result<()> {
         anyhow::bail!("Target directory does not exist or is not a directory: {:?}", target_path);
     }
 
-    println!("Sorting files in {:?} using model '{}'...", target_path, args.model);
+    println!("Sorting files in {:?} using model '{}' (Batch size: {})...", target_path, args.model, args.batch_size);
 
     let entries = fs::read_dir(target_path).context("Failed to read directory")?;
+    let mut files_to_process = Vec::new();
 
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-
-        // Skip directories and hidden files
-        if path.is_dir() {
-            continue;
-        }
+        if path.is_dir() { continue; }
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
-                continue;
-            }
+            if name.starts_with('.') { continue; }
+            files_to_process.push(path);
         }
+    }
 
-        process_file(&client, &args, &path).await?;
+    if files_to_process.is_empty() {
+        println!("No files found to sort.");
+        return Ok(());
+    }
+
+    // Process in batches
+    for chunk in files_to_process.chunks(args.batch_size) {
+        process_batch(&client, &args, chunk).await?;
     }
 
     println!("Done!");
     Ok(())
 }
 
-async fn process_file(client: &Client, args: &Args, file_path: &Path) -> Result<()> {
-    let filename = file_path.file_name().unwrap().to_string_lossy();
-    
-    // Construct the prompt
+async fn process_batch(client: &Client, args: &Args, paths: &[PathBuf]) -> Result<()> {
+    let filenames: Vec<String> = paths.iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+
     let prompt = format!(
-        "Analyze the filename '{}'. Suggest a short, concise directory name to categorize this file. Return ONLY the directory name (e.g., 'Invoices', 'Scripts', 'HolidayPhotos'). Do not use spaces or special characters. Do not explain.",
-        filename
+        "Analyze this list of filenames and suggest a concise, single-word directory name for each. 
+        Return ONLY a JSON object where keys are filenames and values are the suggested directory names.
+        Filenames: {:?}
+        Example output: {{ \"file1.jpg\": \"Photos\", \"script.py\": \"Coding\" }}",
+        filenames
     );
 
     let request = OllamaRequest {
         model: args.model.clone(),
         prompt,
         stream: false,
+        format: "json".to_string(), // Tell Ollama to enforce JSON output
     };
 
-    // Call Ollama API
     let res = client.post(&args.api_url)
         .json(&request)
         .send()
@@ -91,26 +105,34 @@ async fn process_file(client: &Client, args: &Args, file_path: &Path) -> Result<
         .context("Failed to contact Ollama API")?;
 
     if !res.status().is_success() {
-        eprintln!("API Error for {}: {}", filename, res.status());
+        let status = res.status();
+        let error_text = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        eprintln!("API Error: {} - {}", status, error_text);
         return Ok(());
     }
 
     let ollama_res: OllamaResponse = res.json().await.context("Failed to parse Ollama response")?;
-    let category = ollama_res.response.trim().replace(".", ""); // Simple cleanup
-
-    // Sanitize category to be safe for directory name
-    let category = category.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
-    let category = if category.is_empty() { "Other".to_string() } else { category };
-
-    let target_dir = Path::new(&args.target_dir).join(&category);
-    if !target_dir.exists() {
-        fs::create_dir_all(&target_dir).context("Failed to create category directory")?;
-    }
-
-    let new_path = target_dir.join(file_path.file_name().unwrap());
     
-    println!("Moving '{}' -> '{}'", filename, category);
-    fs::rename(file_path, new_path).context("Failed to move file")?;
+    // Parse the JSON mapping from the LLM
+    let mapping: HashMap<String, String> = serde_json::from_str(&ollama_res.response)
+        .context("LLM returned invalid JSON mapping")?;
+
+    for path in paths {
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+        if let Some(category) = mapping.get(&filename) {
+            let sanitized_category = category.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+            let sanitized_category = if sanitized_category.is_empty() { "Other".to_string() } else { sanitized_category };
+
+            let target_dir = Path::new(&args.target_dir).join(&sanitized_category);
+            if !target_dir.exists() {
+                fs::create_dir_all(&target_dir).context("Failed to create category directory")?;
+            }
+
+            let new_path = target_dir.join(path.file_name().unwrap());
+            println!("Moving '{}' -> '{}'", filename, sanitized_category);
+            fs::rename(path, new_path).ok(); // Use ok() to avoid stopping the whole batch on one failure
+        }
+    }
 
     Ok(())
 }
